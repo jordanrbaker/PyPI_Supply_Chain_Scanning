@@ -4,13 +4,57 @@ A pre-install security gatekeeper and CLI wrapper (`safe-pip` / `pypi-scanner`) 
 
 ---
 
+## Primary Use Case: Securing Autonomous AI & Agentic Development
+
+When autonomous AI coding agents (such as **Claude Code**, **Devin**, **Cursor**, **Antigravity**, **AutoGen**, or **CrewAI**) are given terminal execution access, they introduce a critical supply chain attack vector:
+
+### The Threat: Slopsquatting & Obscure Poisoned Packages
+1. **Package Hallucination ("Slopsquatting")**:
+   LLMs frequently hallucinate plausible package names that do not exist (e.g. `flask-secure-auth`, `fast-pdf-processor`). Attackers actively monitor LLM package hallucinations, register those names on PyPI, and embed backdoors or credential stealers. When an autonomous agent runs `pip install <hallucinated-package>`, it compromises the system.
+2. **Obscure or Newly Minted Tools**:
+   An agent autonomously searching for a solution to an esoteric coding problem might scrape a forum or web search result referencing a newly created, unverified package uploaded to PyPI only hours earlier.
+3. **Execution on Install (`setup.py` / wheel build hooks)**:
+   Standard `pip install` executes arbitrary Python code in `setup.py` or build scripts before the package is even imported. Environment variables (`AWS_SECRET_ACCESS_KEY`, `OPENAI_API_KEY`, SSH keys, git credentials) can be exfiltrated before any static linter or runtime check runs.
+
+### How This Gatekeeper Protects Autonomous Agents
+* **Holds the Download**: No bytes are downloaded and no `setup.py` or wheel code is ever executed until security approval is granted.
+* **Transitive Dependency Resolution**: Uses `pip`'s native dry-run resolution report to discover and scan every sub-dependency in the dependency tree. If an obscure backdoor is tucked 4 layers deep into a dependency tree, it is caught.
+* **Fail-Closed on Unknowns (Mode 1)**: Legitimate packages (`requests`, `numpy`, `fastapi`, `pydantic`) have long-standing release histories verified clean by 60+ antivirus engines on VirusTotal. Newly registered, hallucinated, or obscure attack packages have **zero VirusTotal history**. Mode 1 halts the install with exit code `1`.
+* **Forces Agent Self-Correction**: When the install is blocked, the agent receives a clear error in its tool execution output:
+  ```text
+  [ERROR] [BLOCKED] Package obscure-tool not found on VirusTotal. Unknown mode set to BLOCK.
+  [!!!] SECURITY GATE BLOCKED: One or more packages failed verification!
+  ```
+  The LLM reads this feedback, understands that the package is untrusted, and self-corrects—either by selecting an established, trusted library or implementing the functionality using standard libraries.
+
+### Deploying into an Agent Runner Container
+
+Add this to your agent execution Dockerfile:
+
+```dockerfile
+# 1. Install the security gatekeeper into the agent's environment
+RUN git clone https://github.com/Jordan/PyPI_Supply_Chain_Scanning.git /opt/pypi_scanner \
+    && pip install -e /opt/pypi_scanner
+
+# 2. Intercept all 'pip' commands issued by the agent
+RUN pypi-scanner setup-shim --as-pip
+
+# 3. Configure strict fail-closed mode for unindexed packages
+ENV PYPI_SCANNER_UNKNOWN_MODE="block"
+ENV VIRUSTOTAL_API_KEY="your-virustotal-api-key"
+```
+
+Now, whenever an agent executes `pip install <anything>`, the gatekeeper verifies the entire dependency tree before allowing any download.
+
+---
+
 ## Key Capabilities
 
 1. **Pre-Install Interception**:
    - Holds downloads and halts installation execution before any network download or `setup.py` / wheel installation occurs.
    - Transparently passes through non-install `pip` subcommands (`list`, `show`, `uninstall`, `cache`, etc.).
-2. **PyPI & Dependency Resolution**:
-   - Leverages `pip`'s native dry-run resolution report to discover the entire dependency tree (including transitive dependencies).
+2. **PyPI & Full Transitive Dependency Resolution**:
+   - Leverages `pip`'s native dry-run resolution report to discover the entire dependency tree (including all transitive dependencies).
    - Cross-references artifacts and canonical release digests with the official PyPI JSON API.
 3. **VirusTotal API v3 Verification**:
    - Queries VirusTotal file reports (`GET /api/v3/files/{sha256}`) using strict zero-tolerance thresholds (`malicious == 0`, `suspicious == 0`).
@@ -30,7 +74,7 @@ A pre-install security gatekeeper and CLI wrapper (`safe-pip` / `pypi-scanner`) 
 
 ```mermaid
 flowchart TD
-    A["User runs: pip install &lt;package&gt;"] --> B["Interceptor: safe-pip"]
+    A["Agent or User runs: pip install &lt;package&gt;"] --> B["Interceptor: safe-pip"]
     B --> C{"Is command 'install'?"}
     C -- No --> D["Pass through directly to real pip"]
     C -- Yes --> E["Hold download & Resolve full dependency tree"]
@@ -39,7 +83,7 @@ flowchart TD
     G -- "Cached & Clean" --> M["Release hold & Proceed with pip install"]
     G -- "Not Cached" --> H["Query VirusTotal API (GET /api/v3/files/{sha256})"]
     H -- "Found: Clean" --> J["Store in cache & Allow pip install"]
-    H -- "Found: Threat" --> I["BLOCK installation & alert user"]
+    H -- "Found: Threat" --> I["BLOCK installation & alert user/agent"]
     H -- "Not Found (404)" --> K{"Configured Unknown Mode"}
     K -- "Mode 1: block" --> L["BLOCK download & alert: SHA not in VT"]
     K -- "Mode 2: sandbox" --> N["Spin up sandboxed Docker container"]
@@ -118,7 +162,7 @@ PYPI_SCANNER_MOCK_VT=false
 
 ### 1. Using `safe-pip` as a Drop-In Wrapper
 
-Run `safe-pip` in place of `pip`. It intercepts `install`, holds the download, performs security validation, and forwards to real `pip` once approved:
+Run `safe-pip` in place of `pip`. It intercepts `install`, holds the download, performs security validation across all packages and transitive dependencies, and forwards to real `pip` once approved:
 
 ```bash
 # Standard package installation
@@ -161,8 +205,8 @@ pypi-scanner setup-shim --as-pip
 Inspect packages or requirements without installing them:
 
 ```bash
-# Scan a specific package
-pypi-scanner scan cowsay==6.1
+# Scan a specific package and its transitive dependencies
+pypi-scanner scan requests
 
 # Scan in Mode 2 (sandbox if unknown)
 pypi-scanner scan newpackage --on-unknown sandbox
@@ -194,8 +238,8 @@ Configuration Status:
 
 When a package artifact's SHA-256 digest is **not** present in VirusTotal's database (HTTP 404):
 
-### Mode 1: `block` (Default)
-- **Policy**: Zero-trust.
+### Mode 1: `block` (Default & Recommended for AI Agents)
+- **Policy**: Zero-trust / fail-closed.
 - **Action**: Immediately halts the download. No code is executed, no packages are saved.
 - **Output**:
   ```
