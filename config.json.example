@@ -1,0 +1,13 @@
+{
+  "virustotal_api_key": "YOUR_VIRUSTOTAL_API_KEY_HERE",
+  "unknown_mode": "block",
+  "max_malicious": 0,
+  "max_suspicious": 0,
+  "docker_image": "python:3.12-slim",
+  "docker_timeout": 120,
+  "vt_poll_timeout": 180,
+  "vt_poll_interval": 10,
+  "cache_enabled": true,
+  "cache_ttl_hours": 168,
+  "mock_vt": false
+}

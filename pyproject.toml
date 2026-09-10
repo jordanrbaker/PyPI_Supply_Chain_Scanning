@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pypi-supply-chain-scanner"
+version = "1.0.0"
+description = "Pre-install security scanner for pip packages using VirusTotal API v3 and Docker sandboxing."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "Jordan" }
+]
+keywords = ["pypi", "security", "virustotal", "supply-chain", "pip", "docker", "sandbox"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Topic :: Security",
+    "Programming Language :: Python :: 3",
+]
+dependencies = []
+
+[project.scripts]
+safe-pip = "pypi_scanner.cli:main"
+pypi-scanner = "pypi_scanner.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pypi_scanner*"]
