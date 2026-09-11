@@ -20,12 +20,30 @@ When autonomous AI coding agents (such as **Claude Code**, **Devin**, **Cursor**
 * **Holds the Download**: No bytes are downloaded and no `setup.py` or wheel code is ever executed until security approval is granted.
 * **Transitive Dependency Resolution**: Uses `pip`'s native dry-run resolution report to discover and scan every sub-dependency in the dependency tree. If an obscure backdoor is tucked 4 layers deep into a dependency tree, it is caught.
 * **Fail-Closed on Unknowns (Mode 1)**: Legitimate packages (`requests`, `numpy`, `fastapi`, `pydantic`) have long-standing release histories verified clean by 60+ antivirus engines on VirusTotal. Newly registered, hallucinated, or obscure attack packages have **zero VirusTotal history**. Mode 1 halts the install with exit code `1`.
-* **Forces Agent Self-Correction**: When the install is blocked, the agent receives a clear error in its tool execution output:
+* **Forces Agent Self-Correction**: When the install is blocked, the agent receives a structured directive in its tool execution output:
   ```text
-  [ERROR] [BLOCKED] Package obscure-tool not found on VirusTotal. Unknown mode set to BLOCK.
-  [!!!] SECURITY GATE BLOCKED: One or more packages failed verification!
+  ================================================================================
+  >>> AGENT_SECURITY_GATE: STATUS = BLOCKED
+  ================================================================================
+  [AGENT_DECISION] INSTALLATION HALTED. No packages were downloaded or executed.
+
+  FAILED PACKAGE ARTIFACTS:
+    * Package: obscure-tool==latest
+      SHA-256: N/A
+      Verdict: BLOCKED
+      Reason:  Package 'obscure-tool==latest' was not found on VirusTotal (no reputation).
+      Threat:  Unindexed package on VirusTotal. High probability of AI hallucination ('slopsquatting') or untrusted supply chain payload.
+
+  ================================================================================
+  ACTIONABLE INSTRUCTIONS FOR THE AGENT (SELF-CORRECTION REQUIRED):
+  ================================================================================
+  1. DO NOT retry installing the blocked package name(s). The gatekeeper will reject it again.
+  2. VERIFY if you hallucinated this package name or misspelled a standard library.
+  3. REPLACE this package with a reputable, verified alternative from the Python standard library or top established PyPI packages.
+  4. IF NO TRUSTED PACKAGE EXISTS: Contact #security-channel for approval or implement in pure Python.
+  ================================================================================
   ```
-  The LLM reads this feedback, understands that the package is untrusted, and self-corrects—either by selecting an established, trusted library or implementing the functionality using standard libraries.
+  The LLM reads this feedback, recognizes that the package is unverified, and adheres directly to Rule #4 rather than getting stuck in retry loops or writing unapproved code.
 
 ### Deploying into an Agent Runner Container
 
@@ -39,9 +57,10 @@ RUN git clone https://github.com/Jordan/PyPI_Supply_Chain_Scanning.git /opt/pypi
 # 2. Intercept all 'pip' commands issued by the agent
 RUN pypi-scanner setup-shim --as-pip
 
-# 3. Configure strict fail-closed mode for unindexed packages
+# 3. Configure strict fail-closed mode and custom fallback directive for the agent
 ENV PYPI_SCANNER_UNKNOWN_MODE="block"
 ENV VIRUSTOTAL_API_KEY="your-virustotal-api-key"
+ENV PYPI_SCANNER_AGENT_INSTRUCTION="Contact #security-channel on Slack for package approval or implement in pure Python."
 ```
 
 Now, whenever an agent executes `pip install <anything>`, the gatekeeper verifies the entire dependency tree before allowing any download.
@@ -136,6 +155,9 @@ PYPI_SCANNER_CACHE_ENABLED=true
 
 # Mock mode for offline testing without live VT key (true/false)
 PYPI_SCANNER_MOCK_VT=false
+
+# Optional custom directive injected into the LLM/Agent's prompt when a package is blocked
+PYPI_SCANNER_AGENT_INSTRUCTION="Contact #security-channel on Slack for package approval or implement in pure Python."
 ```
 
 ### 2. `config.json`
@@ -152,9 +174,17 @@ PYPI_SCANNER_MOCK_VT=false
   "vt_poll_interval": 10,
   "cache_enabled": true,
   "cache_ttl_hours": 168,
-  "mock_vt": false
+  "mock_vt": false,
+  "agent_fallback_instruction": "Contact #security-channel on Slack for package approval or implement in pure Python."
 }
 ```
+
+### 3. Agent Fallback Directive (`PYPI_SCANNER_AGENT_INSTRUCTION`)
+When an AI agent attempts to install an unverified, obscure, or hallucinated package, the scanner displays:
+```text
+4. IF NO TRUSTED PACKAGE EXISTS: <your custom instruction here>
+```
+This single instruction serves as the **authoritative rule** for what the agent must do next (e.g. notify a Slack channel, ask a human operator, or write the logic using standard libraries), preventing the agent from trying to circumvent security controls.
 
 ---
 
@@ -173,6 +203,9 @@ safe-pip install requests>=2.30.0 flask==3.0.0
 
 # Using a requirements file
 safe-pip install -r requirements.txt
+
+# Pass a custom agent directive on the fly
+safe-pip install obscure-tool --agent-instruction "Ask human operator before trying alternative tools"
 
 # Specify unknown mode on the fly
 safe-pip install mypackage --on-unknown sandbox
@@ -210,6 +243,9 @@ pypi-scanner scan requests
 
 # Scan in Mode 2 (sandbox if unknown)
 pypi-scanner scan newpackage --on-unknown sandbox
+
+# Scan with a custom agent directive
+pypi-scanner scan newpackage --agent-instruction "Check internal Artifactory mirror first"
 
 # Scan a requirements file
 pypi-scanner scan requirements.txt
