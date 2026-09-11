@@ -186,10 +186,9 @@ def print_agent_rejection(failed_results: List[PackageScanResult], custom_instru
     print("2. VERIFY if you hallucinated this package name or misspelled a standard library.")
     print("3. REPLACE this package with a reputable, verified alternative from the Python standard library or top established PyPI packages.")
     if custom_instruction:
-        print(f"4. USER/ORGANIZATION DIRECTIVE WHEN UNVERIFIED:\n   >>> {custom_instruction}")
-        print("5. IF NO TRUSTED PACKAGE EXISTS, write the required functionality directly in Python code rather than relying on obscure third-party tools.")
+        print(f"4. IF NO TRUSTED PACKAGE EXISTS: {custom_instruction}")
     else:
-        print("4. IF NO TRUSTED PACKAGE EXISTS, write the required functionality directly in Python code rather than relying on obscure third-party tools.")
+        print("4. IF NO TRUSTED PACKAGE EXISTS: Write the required functionality directly in Python code rather than relying on obscure third-party tools.")
     print("=" * 80 + "\n")
 
 
