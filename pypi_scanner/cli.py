@@ -1,4 +1,4 @@
-"""Command-line interface and safe-pip interceptor wrapper."""
+"""Command-line interface and safe-pip interceptor wrapper standardized for agentic development."""
 
 import argparse
 import json
@@ -122,19 +122,26 @@ def build_scanner_config(
     )
 
 
-def print_banner() -> None:
-    banner = """
-======================================================================
-  PyPI Supply Chain Security Scanner & VirusTotal Gatekeeper
-======================================================================
-"""
-    print(banner)
+def print_agent_header(config: ScannerConfig, targets: List[str]) -> None:
+    """Print structured operational header formatted for agentic parser visibility."""
+    print("=" * 80)
+    print(">>> AGENT_SECURITY_GATE: HOLDING_DOWNLOAD & RESOLVING_DEPENDENCIES")
+    print("=" * 80)
+    print(f"[AGENT_POLICY] Unknown Mode: {config.unknown_mode.value.upper()} (Fail-closed on unindexed packages)")
+    print(f"[AGENT_POLICY] Cache Status: {'ENABLED' if config.cache_enabled else 'DISABLED'}")
+    print(f"[AGENT_POLICY] Transitive Dependency Analysis: ENABLED")
+    if config.mock_vt:
+        print("[AGENT_POLICY] VirusTotal Mock Mode: ACTIVE")
+    print(f"[AGENT_TARGETS] Target Arguments: {' '.join(targets)}")
+    print("=" * 80 + "\n")
 
 
-def print_results_table(results: List[PackageScanResult]) -> None:
-    """Print formatted summary table of scan results."""
+def print_agent_results_table(results: List[PackageScanResult]) -> None:
+    """Print structured evaluation table of all analyzed package artifacts."""
     print("\n" + "=" * 80)
-    print(f"{'PACKAGE':<30} {'VERDICT':<12} {'SHA-256 (PREFIX)':<18} {'DETAILS'}")
+    print(">>> AGENT_SECURITY_GATE: EVALUATION REPORT")
+    print("=" * 80)
+    print(f"{'PACKAGE':<30} {'VERDICT':<12} {'SHA-256 (PREFIX)':<18} {'ANALYSIS DETAILS'}")
     print("-" * 80)
     for r in results:
         pkg_str = r.target.display_name[:28]
@@ -142,13 +149,48 @@ def print_results_table(results: List[PackageScanResult]) -> None:
         sha_str = (r.sha256[:16] + "...") if r.sha256 else "N/A"
         details_str = r.details[:50]
         print(f"{pkg_str:<30} {verdict_str:<12} {sha_str:<18} {details_str}")
+    print("=" * 80)
+
+
+def print_agent_rejection(failed_results: List[PackageScanResult]) -> None:
+    """Print structured rejection report with actionable self-correction instructions for AI agents."""
+    print("\n" + "=" * 80)
+    print(">>> AGENT_SECURITY_GATE: STATUS = BLOCKED")
+    print("=" * 80)
+    print("[AGENT_DECISION] INSTALLATION HALTED. No packages were downloaded or executed.\n")
+    print("FAILED PACKAGE ARTIFACTS:")
+    for r in failed_results:
+        print(f"  * Package: {r.target.display_name}")
+        print(f"    SHA-256: {r.sha256 or 'N/A'}")
+        print(f"    Verdict: {r.verdict.value}")
+        print(f"    Reason:  {r.details}")
+        if r.verdict == ScanVerdict.BLOCKED:
+            print("    Threat:  Unindexed package on VirusTotal. High probability of AI hallucination ('slopsquatting') or untrusted supply chain payload.")
+        elif r.verdict in (ScanVerdict.MALICIOUS, ScanVerdict.SUSPICIOUS):
+            print("    Threat:  CONFIRMED MALICIOUS/SUSPICIOUS signatures flagged by security engines.")
+        print()
+
+    print("=" * 80)
+    print("ACTIONABLE INSTRUCTIONS FOR THE AGENT (SELF-CORRECTION REQUIRED):")
+    print("=" * 80)
+    print("1. DO NOT retry installing the blocked package name(s). The gatekeeper will reject it again.")
+    print("2. VERIFY if you hallucinated this package name or misspelled a standard library.")
+    print("3. REPLACE this package with a reputable, verified alternative from the Python standard library or top established PyPI packages.")
+    print("4. IF NO TRUSTED PACKAGE EXISTS, write the required functionality directly in Python code rather than relying on obscure third-party tools.")
     print("=" * 80 + "\n")
+
+
+def print_agent_approval() -> None:
+    """Print structured pass block for agent visibility."""
+    print("\n" + "=" * 80)
+    print(">>> AGENT_SECURITY_GATE: STATUS = PASSED")
+    print("=" * 80)
+    print("[AGENT_DECISION] All resolved packages and transitive dependencies verified clean against VirusTotal.")
+    print("[AGENT_DECISION] Releasing hold and continuing pip installation...\n")
 
 
 def run_install_interceptor(args: List[str]) -> int:
     """Intercept 'pip install' command, scan packages, and gate installation."""
-    print_banner()
-
     # Extract scanner-specific flags if present before or mixed in args
     cli_api_key = None
     cli_unknown_mode = None
@@ -194,27 +236,20 @@ def run_install_interceptor(args: List[str]) -> int:
         cli_no_cache=cli_no_cache,
     )
 
-    print(f"[*] Unknown Mode: {config.unknown_mode.value.upper()}")
-    print(f"[*] Cache Enabled: {config.cache_enabled}")
-    if config.mock_vt:
-        print("[*] Mock VirusTotal Mode: ACTIVE")
-    elif not config.vt_api_key:
-        print("[!] WARNING: No VirusTotal API key found. Live API queries will fail unless configured or run with --mock-vt.")
-
-    print(f"[*] Resolving packages and holding download for: {' '.join(filtered_pip_args)}")
+    print_agent_header(config, filtered_pip_args)
 
     engine = ScannerEngine(config=config)
     passed, results = engine.scan_pip_install_targets(filtered_pip_args)
 
     if results:
-        print_results_table(results)
+        print_agent_results_table(results)
 
     if not passed:
-        print("\n[!!!] SECURITY GATE BLOCKED: One or more packages failed verification!")
-        print("[!!!] Pip download and installation have been HALTED to protect your environment.\n")
+        failed_targets = [r for r in results if not r.is_passed]
+        print_agent_rejection(failed_targets)
         return 1
 
-    print("[+] All packages verified CLEAN. Releasing hold and continuing installation...\n")
+    print_agent_approval()
     return engine.execute_real_pip_install(filtered_pip_args)
 
 
@@ -222,13 +257,15 @@ def main() -> None:
     """Main CLI entry point for safe-pip and pypi-scanner."""
     raw_args = sys.argv[1:]
 
-    # 1. If no args, print usage or forward to pip
+    # 1. If no args, print usage
     if not raw_args:
-        print_banner()
-        print("Usage:")
+        print("=" * 80)
+        print(">>> AGENT_SECURITY_GATE: CLI USAGE")
+        print("=" * 80)
+        print("Commands:")
         print("  safe-pip install <package_spec> [options]")
-        print("  pypi-scanner scan <package_spec>")
-        print("  pypi-scanner setup-shim")
+        print("  pypi-scanner scan <package_spec> [options]")
+        print("  pypi-scanner setup-shim [--as-pip]")
         print("  pypi-scanner status")
         sys.exit(0)
 
@@ -255,13 +292,20 @@ def main() -> None:
             cli_mock_vt=parsed.mock_vt,
             cli_no_cache=parsed.no_cache,
         )
-        print_banner()
+        print_agent_header(config, [parsed.target])
         engine = ScannerEngine(config=config)
         install_args = ["-r", parsed.target] if Path(parsed.target).is_file() else [parsed.target]
         passed, results = engine.scan_pip_install_targets(install_args)
         if results:
-            print_results_table(results)
-        sys.exit(0 if passed else 1)
+            print_agent_results_table(results)
+
+        if not passed:
+            failed_targets = [r for r in results if not r.is_passed]
+            print_agent_rejection(failed_targets)
+            sys.exit(1)
+        else:
+            print_agent_approval()
+            sys.exit(0)
 
     # 4. Setup shim command: 'setup-shim'
     elif cmd == "setup-shim":
@@ -280,20 +324,21 @@ def main() -> None:
 
     # 5. Status command: 'status'
     elif cmd == "status":
-        print_banner()
         cfg = build_scanner_config()
-        print("Configuration Status:")
+        print("=" * 80)
+        print(">>> AGENT_SECURITY_GATE: ENVIRONMENT CONFIGURATION STATUS")
+        print("=" * 80)
         print(f"  - VT API Key Present: {'Yes' if cfg.vt_api_key else 'No'}")
         print(f"  - Unknown Mode: {cfg.unknown_mode.value.upper()}")
         print(f"  - Docker Sandbox Reachable: {'Yes' if DockerSandbox.is_docker_available() else 'No'}")
         print(f"  - Docker Image: {cfg.docker_image}")
         print(f"  - Cache DB Path: {cfg.cache_db_path}")
         print(f"  - Cache Enabled: {cfg.cache_enabled}")
+        print("=" * 80)
         sys.exit(0)
 
     # 6. Pass through any other pip command transparently (list, show, uninstall, cache, etc.)
     else:
-        # Non-install pip command: pass directly through to real pip
         cmd_line = [sys.executable, "-m", "pip"] + raw_args
         res = subprocess.run(cmd_line)
         sys.exit(res.returncode)

@@ -63,13 +63,14 @@ class ScannerEngine:
         Returns:
             Tuple of (all_passed: bool, results: List[PackageScanResult]).
         """
-        logger.info("Resolving package targets for args: %s", install_args)
+        logger.info("[AGENT_STATUS] Resolving complete dependency tree for: %s", install_args)
         targets = self.resolver.resolve_install_args(install_args)
 
         if not targets:
-            logger.warning("No discrete packages could be resolved from install arguments.")
+            logger.warning("[AGENT_STATUS] No discrete packages resolved from arguments.")
             return True, []
 
+        logger.info("[AGENT_STATUS] Successfully resolved %d target package(s) (including transitive dependencies)", len(targets))
         results: List[PackageScanResult] = []
         all_passed = True
 
@@ -88,7 +89,7 @@ class ScannerEngine:
         - Mode 1: Block download
         - Mode 2: Sandboxed Docker container download, zip, submit, and destroy container.
         """
-        logger.info("--- Scanning package: %s ---", target.display_name)
+        logger.info("[AGENT_EVALUATION] Inspecting target: %s", target.display_name)
 
         # 1. Resolve SHA-256 if not already populated
         sha256 = target.sha256
@@ -100,7 +101,8 @@ class ScannerEngine:
         if sha256 and self.cache:
             cached_result = self.cache.get(sha256)
             if cached_result:
-                logger.info("[CACHE HIT] %s (SHA: %s...) -> Verdict: %s", target.name, sha256[:12], cached_result.verdict.value)
+                logger.info("[AGENT_CACHE: HIT] %s (SHA: %s...) -> Cached Verdict: %s",
+                            target.name, sha256[:12], cached_result.verdict.value)
                 cached_result.target = target
                 return cached_result
 
@@ -109,7 +111,7 @@ class ScannerEngine:
             try:
                 stats = self.vt_client.lookup_file_hash(sha256)
             except VTAuthError as e:
-                logger.error("Authentication Error: %s", e)
+                logger.error("[AGENT_EVALUATION: ERROR] Authentication Error: %s", e)
                 return PackageScanResult(
                     target=target,
                     verdict=ScanVerdict.ERROR,
@@ -117,7 +119,7 @@ class ScannerEngine:
                     details=str(e),
                 )
             except VTRateLimitError as e:
-                logger.error("Rate Limit Error: %s", e)
+                logger.error("[AGENT_EVALUATION: ERROR] Rate Limit Error: %s", e)
                 return PackageScanResult(
                     target=target,
                     verdict=ScanVerdict.ERROR,
@@ -125,7 +127,7 @@ class ScannerEngine:
                     details=str(e),
                 )
             except VTClientError as e:
-                logger.error("VirusTotal API error: %s", e)
+                logger.error("[AGENT_EVALUATION: ERROR] VirusTotal API error: %s", e)
                 return PackageScanResult(
                     target=target,
                     verdict=ScanVerdict.ERROR,
@@ -138,21 +140,23 @@ class ScannerEngine:
                 return self._evaluate_vt_stats(target, sha256, stats)
 
         # 4. SHA-256 NOT found on VirusTotal (or not available on PyPI)
-        logger.warning("SHA-256 for %s (%s) NOT found on VirusTotal.", target.display_name, sha256 or "Unknown SHA")
+        logger.warning("[AGENT_EVALUATION: UNINDEXED] SHA-256 for %s (%s) not found on VirusTotal",
+                       target.display_name, sha256 or "Unknown SHA")
         return self._handle_unknown_target(target, sha256)
 
     def _evaluate_vt_stats(self, target: PackageTarget, sha256: str, stats: VTAnalysisStats) -> PackageScanResult:
         """Evaluate VirusTotal stats against security thresholds."""
         vt_url = f"https://www.virustotal.com/gui/file/{sha256}"
         if stats.is_clean(self.config.max_malicious, self.config.max_suspicious):
-            logger.info("[CLEAN] %s verified clean on VirusTotal (Malicious: %d, Suspicious: %d, Undetected: %d)",
-                        target.display_name, stats.malicious, stats.suspicious, stats.undetected)
+            clean_count = stats.undetected + stats.harmless
+            logger.info("[AGENT_EVALUATION: PASS] %s verified clean on VirusTotal (%d engines clean, 0 malicious)",
+                        target.display_name, clean_count)
             result = PackageScanResult(
                 target=target,
                 verdict=ScanVerdict.CLEAN,
                 sha256=sha256,
                 stats=stats,
-                details=f"Clean on VirusTotal ({stats.undetected + stats.harmless} engines clean, 0 malicious)",
+                details=f"Clean on VirusTotal ({clean_count} engines clean, 0 malicious)",
                 vt_link=vt_url,
             )
             if self.cache:
@@ -160,7 +164,7 @@ class ScannerEngine:
             return result
         else:
             verdict = ScanVerdict.MALICIOUS if stats.malicious > self.config.max_malicious else ScanVerdict.SUSPICIOUS
-            logger.error("[THREAT DETECTED] %s flagged by VirusTotal! Malicious: %d, Suspicious: %d",
+            logger.error("[AGENT_EVALUATION: THREAT] %s flagged by VirusTotal! Malicious: %d, Suspicious: %d",
                          target.display_name, stats.malicious, stats.suspicious)
             result = PackageScanResult(
                 target=target,
@@ -177,12 +181,15 @@ class ScannerEngine:
     def _handle_unknown_target(self, target: PackageTarget, sha256: Optional[str]) -> PackageScanResult:
         """Execute configured mode when SHA is not found on VirusTotal."""
         mode = self.config.unknown_mode
-        logger.info("Executing Unknown Mode: %s for package %s", mode.value.upper(), target.display_name)
+        logger.info("[AGENT_POLICY] Executing Unknown Mode: %s for package %s", mode.value.upper(), target.display_name)
 
         # MODE 1: Block the download
         if mode == UnknownMode.BLOCK:
-            msg = f"Package {target.display_name} (SHA: {sha256 or 'N/A'}) not found on VirusTotal. Unknown mode set to BLOCK. Installation blocked."
-            logger.error("[BLOCKED] %s", msg)
+            msg = (
+                f"Package '{target.display_name}' (SHA: {sha256 or 'N/A'}) was not found on VirusTotal (no reputation). "
+                f"Unknown Mode is set to BLOCK. Potential hallucinated ('slopsquatted') or unverified supply-chain artifact."
+            )
+            logger.error("[AGENT_EVALUATION: BLOCKED] %s", msg)
             return PackageScanResult(
                 target=target,
                 verdict=ScanVerdict.BLOCKED,
@@ -192,7 +199,7 @@ class ScannerEngine:
 
         # MODE 2: Spin up sandboxed docker container, download library, zip it, submit to VT, destroy container
         elif mode == UnknownMode.SANDBOX:
-            logger.info("[MODE 2: SANDBOX] Spinning up sandboxed Docker container for %s...", target.display_name)
+            logger.info("[AGENT_SANDBOX] Triggering isolated Docker sandbox for %s...", target.display_name)
             zip_path: Optional[Path] = None
             try:
                 # 1. Download & zip in Docker sandbox, then destroy container
@@ -202,7 +209,7 @@ class ScannerEngine:
                 )
 
                 # 2. Submit zip file to VirusTotal
-                logger.info("Submitting sandboxed archive %s to VirusTotal API...", zip_path.name)
+                logger.info("[AGENT_SANDBOX] Submitting sandboxed archive %s to VirusTotal API...", zip_path.name)
                 analysis_id = self.vt_client.upload_file(zip_path)
 
                 # 3. Poll analysis until complete
@@ -214,13 +221,15 @@ class ScannerEngine:
 
                 # 4. Evaluate stats
                 if stats.is_clean(self.config.max_malicious, self.config.max_suspicious):
-                    logger.info("[SANDBOX CLEAN] %s passed VirusTotal analysis after sandbox packaging!", target.display_name)
+                    clean_count = stats.undetected + stats.harmless
+                    logger.info("[AGENT_EVALUATION: PASS] Sandboxed archive for %s verified clean by VirusTotal (%d clean)",
+                                target.display_name, clean_count)
                     result = PackageScanResult(
                         target=target,
                         verdict=ScanVerdict.CLEAN,
                         sha256=sha256,
                         stats=stats,
-                        details=f"Sandboxed archive submitted and verified clean by VirusTotal ({stats.undetected} clean)",
+                        details=f"Sandboxed archive submitted and verified clean by VirusTotal ({clean_count} clean)",
                         sandbox_used=True,
                     )
                     if self.cache and sha256:
@@ -228,7 +237,8 @@ class ScannerEngine:
                     return result
                 else:
                     verdict = ScanVerdict.MALICIOUS if stats.malicious > self.config.max_malicious else ScanVerdict.SUSPICIOUS
-                    logger.error("[SANDBOX THREAT] %s flagged as %s after VirusTotal sandbox scan!", target.display_name, verdict.value)
+                    logger.error("[AGENT_EVALUATION: THREAT] Sandboxed archive for %s flagged as %s by VirusTotal!",
+                                 target.display_name, verdict.value)
                     result = PackageScanResult(
                         target=target,
                         verdict=verdict,
@@ -242,7 +252,7 @@ class ScannerEngine:
                     return result
 
             except SandboxError as e:
-                logger.error("Sandbox error for %s: %s", target.display_name, e)
+                logger.error("[AGENT_SANDBOX: ERROR] Sandbox error for %s: %s", target.display_name, e)
                 return PackageScanResult(
                     target=target,
                     verdict=ScanVerdict.ERROR,
@@ -251,7 +261,7 @@ class ScannerEngine:
                     sandbox_used=True,
                 )
             except Exception as e:
-                logger.error("Error during sandboxed VT analysis: %s", e)
+                logger.error("[AGENT_SANDBOX: ERROR] Error during sandboxed VT analysis: %s", e)
                 return PackageScanResult(
                     target=target,
                     verdict=ScanVerdict.ERROR,
@@ -262,7 +272,6 @@ class ScannerEngine:
             finally:
                 if zip_path and zip_path.exists():
                     try:
-                        # Clean up temp host file
                         os.remove(zip_path)
                         if zip_path.parent.name.startswith("pypi_sb_"):
                             import shutil
@@ -279,7 +288,7 @@ class ScannerEngine:
 
     def execute_real_pip_install(self, pip_args: List[str]) -> int:
         """Run the real pip install command after security validation has succeeded."""
-        logger.info("Security checks PASSED. Continuing with pip install: %s", " ".join(pip_args))
+        logger.info("[AGENT_STATUS] Security gate passed. Releasing hold and continuing with pip install: %s", " ".join(pip_args))
         cmd = [sys.executable, "-m", "pip", "install"] + pip_args
         proc = subprocess.run(cmd)
         return proc.returncode
