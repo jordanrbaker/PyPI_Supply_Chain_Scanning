@@ -9,5 +9,6 @@
   "vt_poll_interval": 10,
   "cache_enabled": true,
   "cache_ttl_hours": 168,
-  "mock_vt": false
+  "mock_vt": false,
+  "agent_fallback_instruction": "Contact #security-channel for package approval or implement in pure Python."
 }

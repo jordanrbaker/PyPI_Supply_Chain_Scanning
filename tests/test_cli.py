@@ -18,11 +18,13 @@ class TestCLI(unittest.TestCase):
             cli_unknown_mode="sandbox",
             cli_mock_vt=True,
             cli_no_cache=True,
+            cli_agent_instruction="Ask human operator before proceeding",
         )
         self.assertEqual(cfg.vt_api_key, "cli_test_key")
         self.assertEqual(cfg.unknown_mode, UnknownMode.SANDBOX)
         self.assertTrue(cfg.mock_vt)
         self.assertFalse(cfg.cache_enabled)
+        self.assertEqual(cfg.agent_fallback_instruction, "Ask human operator before proceeding")
 
     def test_shim_installation_in_temp_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:

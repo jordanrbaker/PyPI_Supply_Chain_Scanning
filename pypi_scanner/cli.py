@@ -63,6 +63,7 @@ def build_scanner_config(
     cli_no_cache: bool = False,
     cli_mock_vt: bool = False,
     cli_docker_image: Optional[str] = None,
+    cli_agent_instruction: Optional[str] = None,
 ) -> ScannerConfig:
     """Resolve ScannerConfig from CLI flags, environment variables, .env, and config.json."""
     # 1. Load .env if present
@@ -111,6 +112,13 @@ def build_scanner_config(
     # 7. Cache settings
     cache_enabled = not cli_no_cache and cfg_data.get("cache_enabled", True)
 
+    # 8. User / Agent custom fallback instruction
+    agent_instruction = (
+        cli_agent_instruction
+        or os.environ.get("PYPI_SCANNER_AGENT_INSTRUCTION")
+        or cfg_data.get("agent_fallback_instruction")
+    )
+
     return ScannerConfig(
         vt_api_key=vt_key,
         unknown_mode=unknown_mode,
@@ -119,6 +127,7 @@ def build_scanner_config(
         cache_enabled=cache_enabled,
         max_malicious=int(cfg_data.get("max_malicious", 0)),
         max_suspicious=int(cfg_data.get("max_suspicious", 0)),
+        agent_fallback_instruction=agent_instruction,
     )
 
 
@@ -152,7 +161,7 @@ def print_agent_results_table(results: List[PackageScanResult]) -> None:
     print("=" * 80)
 
 
-def print_agent_rejection(failed_results: List[PackageScanResult]) -> None:
+def print_agent_rejection(failed_results: List[PackageScanResult], custom_instruction: Optional[str] = None) -> None:
     """Print structured rejection report with actionable self-correction instructions for AI agents."""
     print("\n" + "=" * 80)
     print(">>> AGENT_SECURITY_GATE: STATUS = BLOCKED")
@@ -176,7 +185,11 @@ def print_agent_rejection(failed_results: List[PackageScanResult]) -> None:
     print("1. DO NOT retry installing the blocked package name(s). The gatekeeper will reject it again.")
     print("2. VERIFY if you hallucinated this package name or misspelled a standard library.")
     print("3. REPLACE this package with a reputable, verified alternative from the Python standard library or top established PyPI packages.")
-    print("4. IF NO TRUSTED PACKAGE EXISTS, write the required functionality directly in Python code rather than relying on obscure third-party tools.")
+    if custom_instruction:
+        print(f"4. USER/ORGANIZATION DIRECTIVE WHEN UNVERIFIED:\n   >>> {custom_instruction}")
+        print("5. IF NO TRUSTED PACKAGE EXISTS, write the required functionality directly in Python code rather than relying on obscure third-party tools.")
+    else:
+        print("4. IF NO TRUSTED PACKAGE EXISTS, write the required functionality directly in Python code rather than relying on obscure third-party tools.")
     print("=" * 80 + "\n")
 
 
@@ -196,6 +209,7 @@ def run_install_interceptor(args: List[str]) -> int:
     cli_unknown_mode = None
     cli_mock_vt = False
     cli_no_cache = False
+    cli_agent_instruction = None
     filtered_pip_args: List[str] = []
 
     i = 0
@@ -217,6 +231,14 @@ def run_install_interceptor(args: List[str]) -> int:
             cli_unknown_mode = arg.split("=", 1)[1]
             i += 1
             continue
+        elif arg == "--agent-instruction" and i + 1 < len(args):
+            cli_agent_instruction = args[i + 1]
+            i += 2
+            continue
+        elif arg.startswith("--agent-instruction="):
+            cli_agent_instruction = arg.split("=", 1)[1]
+            i += 1
+            continue
         elif arg == "--mock-vt":
             cli_mock_vt = True
             i += 1
@@ -234,6 +256,7 @@ def run_install_interceptor(args: List[str]) -> int:
         cli_unknown_mode=cli_unknown_mode,
         cli_mock_vt=cli_mock_vt,
         cli_no_cache=cli_no_cache,
+        cli_agent_instruction=cli_agent_instruction,
     )
 
     print_agent_header(config, filtered_pip_args)
@@ -246,7 +269,7 @@ def run_install_interceptor(args: List[str]) -> int:
 
     if not passed:
         failed_targets = [r for r in results if not r.is_passed]
-        print_agent_rejection(failed_targets)
+        print_agent_rejection(failed_targets, custom_instruction=config.agent_fallback_instruction)
         return 1
 
     print_agent_approval()
@@ -284,6 +307,7 @@ def main() -> None:
         parser.add_argument("--vt-api-key", help="VirusTotal API key")
         parser.add_argument("--mock-vt", action="store_true", help="Simulate VirusTotal API responses")
         parser.add_argument("--no-cache", action="store_true", help="Bypass local cache")
+        parser.add_argument("--agent-instruction", help="Custom directive injected to the agent if package is rejected")
         parsed = parser.parse_args(raw_args[1:])
 
         config = build_scanner_config(
@@ -291,6 +315,7 @@ def main() -> None:
             cli_unknown_mode=parsed.on_unknown,
             cli_mock_vt=parsed.mock_vt,
             cli_no_cache=parsed.no_cache,
+            cli_agent_instruction=parsed.agent_instruction,
         )
         print_agent_header(config, [parsed.target])
         engine = ScannerEngine(config=config)
@@ -301,7 +326,7 @@ def main() -> None:
 
         if not passed:
             failed_targets = [r for r in results if not r.is_passed]
-            print_agent_rejection(failed_targets)
+            print_agent_rejection(failed_targets, custom_instruction=config.agent_fallback_instruction)
             sys.exit(1)
         else:
             print_agent_approval()
@@ -334,6 +359,7 @@ def main() -> None:
         print(f"  - Docker Image: {cfg.docker_image}")
         print(f"  - Cache DB Path: {cfg.cache_db_path}")
         print(f"  - Cache Enabled: {cfg.cache_enabled}")
+        print(f"  - Agent Fallback Directive: {cfg.agent_fallback_instruction or 'None (default)'}")
         print("=" * 80)
         sys.exit(0)
 

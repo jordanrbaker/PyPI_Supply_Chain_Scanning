@@ -113,3 +113,4 @@ class ScannerConfig:
     cache_ttl_hours: int = 168  # 7 days
     cache_db_path: Path = field(default_factory=lambda: Path.home() / ".pypi_scanner" / "cache.db")
     mock_vt: bool = False
+    agent_fallback_instruction: Optional[str] = None
